@@ -1,16 +1,21 @@
 #!/usr/bin/env gjs
 
 /**
- * Todo App with per-item Pomodoro timer using a circular clock visualization.
+ * Todo App with per-item Pomodoro timer (circular clock) and two views:
+ *  “Todos” and “Completed”, switchable via a StackSwitcher at the top.
  *
- * Each task row has:
- *  - A CheckButton for marking done.
- *  - A circular timer widget (DrawingArea) showing remaining time as arc + MM:SS text.
- *  - A Start/Pause button.
- *  - A Reset button.
- *  - A Delete button.
+ * In the “Todos” view:
+ *   - Input row (Entry + Add button)
+ *   - List of active tasks
+ * In the “Completed” view:
+ *   - List of completed tasks
  *
- * Uses GLib.timeout_add_seconds for 1-second updates, and redraws the DrawingArea each tick.
+ * Checking a task moves it to Completed; unchecking moves it back to Todos.
+ * Each task has a circular Pomodoro timer (25 min), Start/Pause, Reset, and Delete.
+ *
+ * Usage:
+ *   chmod +x main.js
+ *   ./main.js
  */
 
 imports.gi.versions.Gtk = "4.0";
@@ -33,39 +38,35 @@ function formatTime(seconds) {
 const POMODORO_DURATION = 25 * 60; // 25 minutes
 const CLOCK_SIZE = 50; // pixel width/height of the circular timer
 
-// Helper: extract a color from the style context for drawing, so we adapt to theme
+// Helper: get a color from style context, adapting to theme
 function getColorRGBA(styleContext, stateFlags = Gtk.StateFlags.NORMAL) {
-    // In GTK4, use styleContext.get_color() or get_property?
-    // Actually: styleContext.get_color() is deprecated; instead use styleContext.lookup_color?
-    // We can fetch a CSS color name if we know one, but for simplicity, fetch from "color" CSS property:
-    // styleContext.get_color() returns Gdk.RGBA
     try {
         let color = styleContext.get_color(stateFlags);
         return color; // Gdk.RGBA
     } catch (e) {
-        // Fallback to a default (black)
+        // Fallback to black
         let c = new Gdk.RGBA();
         c.parse("black");
         return c;
     }
 }
 
-// Create application
 const app = new Gtk.Application({
-    application_id: "com.example.TodoPomodoroAppCircular",
+    application_id: "com.example.TodoPomodoroAppStackViews",
     flags: Gio.ApplicationFlags.FLAGS_NONE,
 });
 
 app.connect("activate", () => {
+    // Main window
     const win = new Gtk.ApplicationWindow({
         application: app,
-        title: "Todo App with Circular Pomodoro Timers",
+        title: "Todo App with Pomodoro & Views",
         default_width: 600,
-        default_height: 600,
+        default_height: 700,
     });
 
-    // Main vertical box
-    const vbox = new Gtk.Box({
+    // Main vertical container
+    const mainVBox = new Gtk.Box({
         orientation: Gtk.Orientation.VERTICAL,
         spacing: 10,
         margin_top: 15,
@@ -74,45 +75,83 @@ app.connect("activate", () => {
         margin_end: 15,
     });
 
-    // Entry and Add button
+    // === Create Stack and StackSwitcher for two views ===
+    const stack = new Gtk.Stack({
+        transition_type: Gtk.StackTransitionType.SLIDE_LEFT_RIGHT,
+        transition_duration: 200,
+    });
+    const stackSwitcher = new Gtk.StackSwitcher({
+        stack: stack,
+    });
+    // Style the StackSwitcher if desired; by default it shows buttons with titles of pages.
+
+    // Pack the StackSwitcher at top
+    mainVBox.append(stackSwitcher);
+
+    // === Create Active (“Todos”) view ===
+    const todosBox = new Gtk.Box({
+        orientation: Gtk.Orientation.VERTICAL,
+        spacing: 10,
+    });
+
+    // Input row: Entry + Add button
     const entry = new Gtk.Entry({
         placeholder_text: "Add a new task...",
         hexpand: true,
     });
-
     const addButton = new Gtk.Button({ label: "➕ Add Task" });
-
     const inputBox = new Gtk.Box({
         orientation: Gtk.Orientation.HORIZONTAL,
         spacing: 8,
     });
     inputBox.append(entry);
     inputBox.append(addButton);
+    todosBox.append(inputBox);
 
-    // Scrollable ListBox for tasks
-    const scrolledWindow = new Gtk.ScrolledWindow({
+    // Scrollable active list
+    const activeScrolled = new Gtk.ScrolledWindow({
         vexpand: true,
     });
-
-    const taskList = new Gtk.ListBox({
+    const activeList = new Gtk.ListBox({
         selection_mode: Gtk.SelectionMode.NONE,
     });
-    scrolledWindow.set_child(taskList);
+    activeScrolled.set_child(activeList);
+    todosBox.append(activeScrolled);
 
-    // Pack input and list into main vbox
-    vbox.append(inputBox);
-    vbox.append(scrolledWindow);
-    win.set_child(vbox);
+    // === Create Completed view ===
+    const completedBox = new Gtk.Box({
+        orientation: Gtk.Orientation.VERTICAL,
+        spacing: 10,
+    });
+    // Scrollable completed list
+    const completedScrolled = new Gtk.ScrolledWindow({
+        vexpand: true,
+    });
+    const completedList = new Gtk.ListBox({
+        selection_mode: Gtk.SelectionMode.NONE,
+    });
+    completedScrolled.set_child(completedList);
+    completedBox.append(completedScrolled);
 
-    // Function to add a task row with circular timer controls
+    // Add pages to stack: the first argument is the child widget,
+    // second is the name (id), third is the visible title on StackSwitcher.
+    stack.add_titled(todosBox, "todos", "Todos");
+    stack.add_titled(completedBox, "completed", "Completed");
+
+    // Finally, pack stack into mainVBox
+    mainVBox.append(stack);
+
+    win.set_child(mainVBox);
+
+    // === Function to add a task row into Active list ===
     function addTask(taskText) {
         const text = taskText.trim();
         if (text === "") return;
 
-        // Create a ListBoxRow
+        // Create ListBoxRow
         const row = new Gtk.ListBoxRow();
 
-        // Horizontal box inside the row
+        // Horizontal container in row
         const hbox = new Gtk.Box({
             orientation: Gtk.Orientation.HORIZONTAL,
             spacing: 10,
@@ -122,11 +161,11 @@ app.connect("activate", () => {
             margin_end: 4,
         });
 
-        // 1. CheckButton for marking completion
+        // 1. CheckButton
         const checkButton = new Gtk.CheckButton({ label: text });
         checkButton.hexpand = true;
 
-        // 2. Circular timer widget: DrawingArea
+        // 2. Circular timer widget
         const drawingArea = new Gtk.DrawingArea({
             width_request: CLOCK_SIZE,
             height_request: CLOCK_SIZE,
@@ -139,57 +178,47 @@ app.connect("activate", () => {
 
         // Draw function for the circular timer
         drawingArea.set_draw_func((area, cr, width, height) => {
-            // Use style context to fetch theme colors
             const styleContext = area.get_style_context();
-            // Base color for arc/text
             let color = getColorRGBA(styleContext);
-            // Background circle color: translucent version
+            // Background circle color (translucent)
             let bgColor = new Gdk.RGBA();
             bgColor.red = color.red;
             bgColor.green = color.green;
             bgColor.blue = color.blue;
-            bgColor.alpha = 0.2; // translucent background
+            bgColor.alpha = 0.2;
 
-            // Convert Gdk.RGBA to cairo source
             cr.setSourceRGBA(bgColor.red, bgColor.green, bgColor.blue, bgColor.alpha);
-            let radius = Math.min(width, height) / 2 - 2; // slight padding
+            let radius = Math.min(width, height) / 2 - 2;
             let cx = width / 2;
             let cy = height / 2;
-            // Draw background circle
+            // Background circle
             cr.arc(cx, cy, radius, 0, 2 * Math.PI);
             cr.fill();
 
-            // Foreground arc: show elapsed portion
+            // Foreground arc
             let fraction = (POMODORO_DURATION - remaining) / POMODORO_DURATION;
-            // If remaining <= 0, full circle
-            let endAngle = -Math.PI / 2 + fraction * 2 * Math.PI;
-            // Only draw if remaining > 0
             if (remaining > 0) {
+                let endAngle = -Math.PI / 2 + fraction * 2 * Math.PI;
                 cr.setSourceRGBA(color.red, color.green, color.blue, 1.0);
                 cr.setLineWidth(4);
-                // Draw arc from top (-π/2) to endAngle
                 cr.arc(cx, cy, radius, -Math.PI / 2, endAngle);
                 cr.stroke();
             } else {
-                // Optionally, draw a full circle in a different color or flash; here draw full arc
+                // Completed circle
                 cr.setSourceRGBA(color.red, color.green, color.blue, 1.0);
                 cr.setLineWidth(4);
                 cr.arc(cx, cy, radius, 0, 2 * Math.PI);
                 cr.stroke();
             }
 
-            // Draw the time text centered
+            // Time text centered
             const layout = PangoCairo.create_layout(cr);
             layout.set_text(formatTime(remaining), -1);
-            // Choose a font size relative to area
-            const fontDesc = Pango.FontDescription.from_string("10"); // adjust if needed
+            const fontDesc = Pango.FontDescription.from_string("10");
             layout.set_font_description(fontDesc);
-            // Get text size
             let [textWidth, textHeight] = layout.get_size();
-            // Pango returns sizes in Pango units (1/ PANGO_SCALE)
             textWidth = textWidth / Pango.SCALE;
             textHeight = textHeight / Pango.SCALE;
-            // Position to center
             let tx = cx - textWidth / 2;
             let ty = cy - textHeight / 2;
             cr.setSourceRGBA(color.red, color.green, color.blue, 1.0);
@@ -202,30 +231,23 @@ app.connect("activate", () => {
         startPauseButton.connect("clicked", () => {
             if (!running) {
                 if (remaining <= 0) {
-                    // Already finished: do nothing or require reset first
                     return;
                 }
-                // Start countdown
                 running = true;
                 startPauseButton.label = "Pause";
-                // Tick every second
                 timeoutId = GLib.timeout_add_seconds(
                     GLib.PRIORITY_DEFAULT,
                     1,
                     () => {
                         remaining--;
-                        // Redraw the circular timer
                         drawingArea.queue_draw();
-
                         if (remaining <= 0) {
-                            // Time's up
                             running = false;
                             startPauseButton.label = "Start";
                             if (timeoutId) {
                                 GLib.source_remove(timeoutId);
                                 timeoutId = 0;
                             }
-                            // Notify: here just print; you can show a dialog or notification
                             print(`Pomodoro for "${text}" completed!`);
                             return GLib.SOURCE_REMOVE;
                         }
@@ -264,11 +286,48 @@ app.connect("activate", () => {
                 timeoutId = 0;
                 running = false;
             }
-            taskList.remove(row);
+            // Remove from whichever list it's in
+            let parent = row.get_parent();
+            if (parent === activeList) {
+                activeList.remove(row);
+            } else if (parent === completedList) {
+                completedList.remove(row);
+            } else {
+                row.destroy();
+            }
         });
 
-        // Pack widgets into hbox:
-        // [ CheckButton | DrawingArea | Start/Pause | Reset | Delete ]
+        // Checkbox toggled: move between Todos (activeList) and Completed (completedList)
+        checkButton.connect("toggled", () => {
+            let isChecked = checkButton.get_active();
+            // Stop & reset timer if running
+            if (running && timeoutId) {
+                GLib.source_remove(timeoutId);
+                timeoutId = 0;
+                running = false;
+            }
+            remaining = POMODORO_DURATION;
+            drawingArea.queue_draw();
+            startPauseButton.label = "Start";
+
+            if (isChecked) {
+                // Move to Completed view
+                startPauseButton.set_sensitive(false);
+                resetButton.set_sensitive(false);
+                activeList.remove(row);
+                completedList.append(row);
+                completedList.show_all();
+            } else {
+                // Move back to Todos view
+                startPauseButton.set_sensitive(true);
+                resetButton.set_sensitive(true);
+                completedList.remove(row);
+                activeList.append(row);
+                activeList.show_all();
+            }
+        });
+
+        // Pack into hbox: [CheckButton | DrawingArea | Start/Pause | Reset | Delete]
         hbox.append(checkButton);
         hbox.append(drawingArea);
         hbox.append(startPauseButton);
@@ -276,11 +335,13 @@ app.connect("activate", () => {
         hbox.append(deleteButton);
 
         row.set_child(hbox);
-        taskList.append(row);
-        taskList.show_all();
+
+        // Initially append to activeList
+        activeList.append(row);
+        activeList.show_all();
     }
 
-    // Connect Add button
+    // Connect Add button and Enter key in entry
     addButton.connect("clicked", () => {
         addTask(entry.text);
         entry.text = "";
@@ -291,6 +352,7 @@ app.connect("activate", () => {
         entry.text = "";
     });
 
+    // Show the window
     win.present();
 });
 
